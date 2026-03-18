@@ -14,7 +14,7 @@ func (s *Server) setupRoutes() {
 	r.Use(middleware.Recoverer)
 
 	r.Group(func(r chi.Router) {
-		r.Use(auth.BearerAuth(s.store))
+		r.Use(auth.BearerAuth(s.store, s.logger))
 		r.Post("/request-cert", s.handleRequestCert)
 		r.Get("/status/{hostname}", s.handleGetStatus)
 	})

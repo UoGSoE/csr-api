@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/billyraycyrus/csr-api/internal/store"
 )
+
+var testLogger = slog.Default()
 
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
@@ -38,7 +41,7 @@ func TestBearerAuth_ValidToken(t *testing.T) {
 	rawToken := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	insertTestToken(t, s, rawToken)
 
-	handler := BearerAuth(s)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := BearerAuth(s, testLogger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -55,7 +58,7 @@ func TestBearerAuth_ValidToken(t *testing.T) {
 func TestBearerAuth_MissingHeader(t *testing.T) {
 	s := newTestStore(t)
 
-	handler := BearerAuth(s)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := BearerAuth(s, testLogger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
 	}))
 
@@ -77,7 +80,7 @@ func TestBearerAuth_MissingHeader(t *testing.T) {
 func TestBearerAuth_InvalidToken(t *testing.T) {
 	s := newTestStore(t)
 
-	handler := BearerAuth(s)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := BearerAuth(s, testLogger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
 	}))
 
@@ -97,7 +100,7 @@ func TestBearerAuth_RevokedToken(t *testing.T) {
 	insertTestToken(t, s, rawToken)
 	s.RevokeTokenByPrefix(TokenPrefix(rawToken))
 
-	handler := BearerAuth(s)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := BearerAuth(s, testLogger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
 	}))
 

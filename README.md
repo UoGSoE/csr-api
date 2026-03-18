@@ -100,6 +100,26 @@ Returns the current state of the request (`pending_dns`, `issued`, `failed`, or 
 | `--poll-timeout` | `CSR_API_POLL_TIMEOUT` | `2h` | Give up after this long |
 | `--poll-interval` | `CSR_API_POLL_INTERVAL` | `2m` | Time between DNS checks |
 
+## Logging
+
+The API uses Go's structured logging (slog). Every log line is machine-parseable with `level`, `msg`, and contextual fields. The three levels mean:
+
+- **INFO** -- normal operations (startup, certs issued, shutdown)
+- **WARN** -- expected but notable events (rejected auth, minor failures)
+- **ERROR** -- something is actually broken (ACME failures, DB errors)
+
+Example output:
+
+```
+time=2026-03-18T20:00:00.000Z level=INFO  msg="starting server" addr=:8443
+time=2026-03-18T20:01:30.000Z level=INFO  msg="cert issued" hostname=app.example.com path=data/certs/app.example.com.pem
+time=2026-03-18T20:02:00.000Z level=WARN  msg="auth rejected" prefix=8a5a0868
+time=2026-03-18T20:03:00.000Z level=ERROR msg="obtain cert failed" hostname=app.example.com err="acme: error 400 - urn:ietf:params:acme:error:rejectedIdentifier"
+time=2026-03-18T20:05:00.000Z level=INFO  msg="shutting down..."
+```
+
+If you're feeding logs into a central system, grep for `level=ERROR` to catch things that need attention. `level=WARN` with `msg="auth rejected"` is worth monitoring if you want to spot brute-force attempts -- the `prefix` field identifies which token was tried without leaking the secret.
+
 ## Running tests
 
 ```bash

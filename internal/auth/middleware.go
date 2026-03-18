@@ -10,7 +10,7 @@ import (
 )
 
 // BearerAuth returns middleware that validates Authorization: Bearer <token>.
-func BearerAuth(st *store.Store) func(http.Handler) http.Handler {
+func BearerAuth(st *store.Store, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
@@ -24,17 +24,18 @@ func BearerAuth(st *store.Store) func(http.Handler) http.Handler {
 
 			token, err := st.GetTokenByHash(hash)
 			if err != nil {
-				slog.Error("auth lookup failed", "err", err)
+				logger.Error("auth lookup failed", "err", err)
 				writeAuthError(w, "internal error")
 				return
 			}
 			if token == nil || token.Revoked {
+				logger.Warn("auth rejected", "prefix", TokenPrefix(rawToken))
 				writeAuthError(w, "invalid or revoked token")
 				return
 			}
 
 			if err := st.TouchTokenLastUsed(token.ID); err != nil {
-				slog.Error("touch last_used failed", "err", err)
+				logger.Warn("touch last_used failed", "err", err)
 			}
 
 			next.ServeHTTP(w, r)
