@@ -1,0 +1,10 @@
+# Binary
+csr-api
+
+# Data directory (db, certs, account key)
+data/
+
+# Environment
+.env
+
+.ait
