@@ -1,40 +1,49 @@
 package server
 
 import (
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
+	"time"
 
+	"github.com/billyraycyrus/csr-api/internal/auth"
+	"github.com/billyraycyrus/csr-api/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
-type certRequestIn struct {
+type submitCSRIn struct {
 	Hostname string `json:"hostname"`
 	B64CSR   string `json:"b64_csr"`
 }
 
-type certRequestOut struct {
-	Hostname       string `json:"hostname"`
-	TXTRecordName  string `json:"txt_record_name"`
-	TXTRecordValue string `json:"txt_record_value"`
-	Message        string `json:"message"`
+type submitCSROut struct {
+	Hostname    string `json:"hostname"`
+	SubmittedBy string `json:"submitted_by"`
+	Status      string `json:"status"`
+	Message     string `json:"message"`
 }
 
 type statusOut struct {
 	Hostname    string  `json:"hostname"`
+	SubmittedBy string  `json:"submitted_by"`
 	Status      string  `json:"status"`
-	TXTValue    string  `json:"txt_value"`
 	CreatedAt   string  `json:"created_at"`
 	CompletedAt *string `json:"completed_at"`
 }
 
-func (s *Server) handleRequestCert(w http.ResponseWriter, r *http.Request) {
-	var req certRequestIn
+func (s *Server) handleSubmitCSR(w http.ResponseWriter, r *http.Request) {
+	var req submitCSRIn
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if req.Hostname == "" {
+		writeError(w, http.StatusBadRequest, "hostname is required")
 		return
 	}
 
@@ -44,18 +53,50 @@ func (s *Server) handleRequestCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	challenge, err := s.obtainer.ObtainCert(r.Context(), csrPEM, req.Hostname)
-	if err != nil {
-		s.logger.Error("obtain cert failed", "hostname", req.Hostname, "err", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := validateCSR(csrPEM); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, certRequestOut{
-		Hostname:       req.Hostname,
-		TXTRecordName:  challenge.FQDN,
-		TXTRecordValue: challenge.Value,
-		Message:        "Create this TXT record in DNS. We will poll and finalise automatically.",
+	submittedBy := auth.ForWhomFromContext(r.Context())
+
+	// Save CSR to disk: {csrs-dir}/{submitted-by}/{hostname}.csr
+	ownerDir := filepath.Join(s.csrsDir, submittedBy)
+	if err := os.MkdirAll(ownerDir, 0o755); err != nil {
+		s.logger.Error("create csr dir failed", "path", ownerDir, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	csrPath := filepath.Join(ownerDir, req.Hostname+".csr")
+	if err := os.WriteFile(csrPath, csrPEM, 0o644); err != nil {
+		s.logger.Error("write csr failed", "path", csrPath, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.store.InsertCertRequest(&store.CertRequest{
+		Hostname:    req.Hostname,
+		CSRPEM:      string(csrPEM),
+		CSRPath:     csrPath,
+		SubmittedBy: submittedBy,
+		Status:      "submitted",
+		CreatedAt:   now,
+	})
+	if err != nil {
+		s.logger.Error("insert request failed", "hostname", req.Hostname, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	s.logger.Info("csr submitted", "hostname", req.Hostname, "submitted_by", submittedBy, "path", csrPath)
+
+	writeJSON(w, http.StatusAccepted, submitCSROut{
+		Hostname:    req.Hostname,
+		SubmittedBy: submittedBy,
+		Status:      "submitted",
+		Message:     "CSR received and saved. It will be processed shortly.",
 	})
 }
 
@@ -69,54 +110,39 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cr == nil {
-		writeError(w, http.StatusNotFound, "No request found")
+		writeError(w, http.StatusNotFound, "no request found")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, statusOut{
 		Hostname:    cr.Hostname,
+		SubmittedBy: cr.SubmittedBy,
 		Status:      cr.Status,
-		TXTValue:    cr.TXTValue,
 		CreatedAt:   cr.CreatedAt,
 		CompletedAt: cr.CompletedAt,
 	})
 }
 
-func (s *Server) handleGetCert(w http.ResponseWriter, r *http.Request) {
-	hostname := chi.URLParam(r, "hostname")
-
-	if s.allowedDomain != "" && !strings.HasSuffix(hostname, s.allowedDomain) {
-		writeError(w, http.StatusForbidden, "hostname not allowed")
-		return
+func validateCSR(csrPEM []byte) error {
+	block, _ := pem.Decode(csrPEM)
+	if block == nil {
+		return &validationError{"no PEM block found in CSR"}
 	}
-
-	cr, err := s.store.GetLatestByHostname(hostname)
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil {
-		s.logger.Error("get cert failed", "hostname", hostname, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
+		return &validationError{"invalid CSR: " + err.Error()}
 	}
-	if cr == nil {
-		writeError(w, http.StatusNotFound, "no certificate request found for this hostname")
-		return
+	if csr.Subject.CommonName == "" && len(csr.DNSNames) == 0 {
+		return &validationError{"CSR has no CN and no SANs"}
 	}
-	if cr.Status != "issued" {
-		writeError(w, http.StatusNotFound, "certificate not yet issued (status: "+cr.Status+")")
-		return
-	}
-
-	certPath := filepath.Join(s.certsDir, hostname+".pem")
-	pemData, err := os.ReadFile(certPath)
-	if err != nil {
-		s.logger.Error("read cert file failed", "hostname", hostname, "path", certPath, "err", err)
-		writeError(w, http.StatusNotFound, "certificate file not found")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/pem-certificate-chain")
-	w.Header().Set("Content-Disposition", "inline; filename=fullchain.crt")
-	w.Write(pemData)
+	return nil
 }
+
+type validationError struct {
+	msg string
+}
+
+func (e *validationError) Error() string { return e.msg }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

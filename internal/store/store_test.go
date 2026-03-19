@@ -18,12 +18,12 @@ func TestInsertAndGetCertRequest(t *testing.T) {
 	s := newTestStore(t)
 
 	id, err := s.InsertCertRequest(&CertRequest{
-		Hostname:  "test.example.com",
-		CSRPEM:    "-----BEGIN CERTIFICATE REQUEST-----\nfake\n-----END CERTIFICATE REQUEST-----",
-		TXTFQDN:   "_acme-challenge.test.example.com.",
-		TXTValue:  "abc123",
-		Status:    "pending_dns",
-		CreatedAt: "2026-03-18T10:00:00Z",
+		Hostname:    "test.example.com",
+		CSRPEM:      "-----BEGIN CERTIFICATE REQUEST-----\nfake\n-----END CERTIFICATE REQUEST-----",
+		CSRPath:     "data/csrs/alice/test.example.com.csr",
+		SubmittedBy: "alice",
+		Status:      "submitted",
+		CreatedAt:   "2026-03-18T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -42,11 +42,14 @@ func TestInsertAndGetCertRequest(t *testing.T) {
 	if got.Hostname != "test.example.com" {
 		t.Errorf("hostname = %q, want %q", got.Hostname, "test.example.com")
 	}
-	if got.TXTValue != "abc123" {
-		t.Errorf("txt_value = %q, want %q", got.TXTValue, "abc123")
+	if got.SubmittedBy != "alice" {
+		t.Errorf("submitted_by = %q, want %q", got.SubmittedBy, "alice")
 	}
-	if got.Status != "pending_dns" {
-		t.Errorf("status = %q, want %q", got.Status, "pending_dns")
+	if got.CSRPath != "data/csrs/alice/test.example.com.csr" {
+		t.Errorf("csr_path = %q", got.CSRPath)
+	}
+	if got.Status != "submitted" {
+		t.Errorf("status = %q, want %q", got.Status, "submitted")
 	}
 }
 
@@ -54,12 +57,12 @@ func TestUpdateStatus(t *testing.T) {
 	s := newTestStore(t)
 
 	id, _ := s.InsertCertRequest(&CertRequest{
-		Hostname:  "test.example.com",
-		CSRPEM:    "fake",
-		TXTFQDN:   "_acme-challenge.test.example.com.",
-		TXTValue:  "abc123",
-		Status:    "pending_dns",
-		CreatedAt: "2026-03-18T10:00:00Z",
+		Hostname:    "test.example.com",
+		CSRPEM:      "fake",
+		CSRPath:     "data/csrs/alice/test.example.com.csr",
+		SubmittedBy: "alice",
+		Status:      "submitted",
+		CreatedAt:   "2026-03-18T10:00:00Z",
 	})
 
 	errMsg := "something went wrong"
@@ -76,50 +79,25 @@ func TestUpdateStatus(t *testing.T) {
 	}
 }
 
-func TestUpdateChallengeData(t *testing.T) {
+func TestMarkComplete(t *testing.T) {
 	s := newTestStore(t)
 
 	id, _ := s.InsertCertRequest(&CertRequest{
-		Hostname:  "test.example.com",
-		CSRPEM:    "fake",
-		TXTFQDN:   "",
-		TXTValue:  "",
-		Status:    "pending_dns",
-		CreatedAt: "2026-03-18T10:00:00Z",
+		Hostname:    "test.example.com",
+		CSRPEM:      "fake",
+		CSRPath:     "data/csrs/alice/test.example.com.csr",
+		SubmittedBy: "alice",
+		Status:      "submitted",
+		CreatedAt:   "2026-03-18T10:00:00Z",
 	})
 
-	if err := s.UpdateChallengeData(id, "_acme-challenge.test.example.com.", "xyz789"); err != nil {
-		t.Fatalf("update challenge data: %v", err)
+	if err := s.MarkComplete(id); err != nil {
+		t.Fatalf("mark complete: %v", err)
 	}
 
 	got, _ := s.GetLatestByHostname("test.example.com")
-	if got.TXTFQDN != "_acme-challenge.test.example.com." {
-		t.Errorf("txt_fqdn = %q, want %q", got.TXTFQDN, "_acme-challenge.test.example.com.")
-	}
-	if got.TXTValue != "xyz789" {
-		t.Errorf("txt_value = %q, want %q", got.TXTValue, "xyz789")
-	}
-}
-
-func TestMarkCompleted(t *testing.T) {
-	s := newTestStore(t)
-
-	id, _ := s.InsertCertRequest(&CertRequest{
-		Hostname:  "test.example.com",
-		CSRPEM:    "fake",
-		TXTFQDN:   "_acme-challenge.test.example.com.",
-		TXTValue:  "abc123",
-		Status:    "pending_dns",
-		CreatedAt: "2026-03-18T10:00:00Z",
-	})
-
-	if err := s.MarkCompleted(id); err != nil {
-		t.Fatalf("mark completed: %v", err)
-	}
-
-	got, _ := s.GetLatestByHostname("test.example.com")
-	if got.Status != "issued" {
-		t.Errorf("status = %q, want %q", got.Status, "issued")
+	if got.Status != "complete" {
+		t.Errorf("status = %q, want %q", got.Status, "complete")
 	}
 	if got.CompletedAt == nil {
 		t.Error("completed_at should not be nil")

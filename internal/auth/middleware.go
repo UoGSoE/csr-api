@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,19 @@ import (
 
 	"github.com/billyraycyrus/csr-api/internal/store"
 )
+
+type contextKey string
+
+const forWhomCtxKey contextKey = "for_whom"
+
+// ForWhomKey returns the context key for the token owner, for use in tests.
+func ForWhomKey() contextKey { return forWhomCtxKey }
+
+// ForWhomFromContext returns the token owner from the request context.
+func ForWhomFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(forWhomCtxKey).(string)
+	return v
+}
 
 // BearerAuth returns middleware that validates Authorization: Bearer <token>.
 func BearerAuth(st *store.Store, logger *slog.Logger) func(http.Handler) http.Handler {
@@ -38,7 +52,8 @@ func BearerAuth(st *store.Store, logger *slog.Logger) func(http.Handler) http.Ha
 				logger.Warn("touch last_used failed", "err", err)
 			}
 
-			next.ServeHTTP(w, r)
+			ctx := context.WithValue(r.Context(), forWhomCtxKey, token.ForWhom)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

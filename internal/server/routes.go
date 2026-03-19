@@ -15,12 +15,9 @@ func (s *Server) setupRoutes() {
 
 	r.Group(func(r chi.Router) {
 		r.Use(auth.BearerAuth(s.store, s.logger))
-		r.Post("/request-cert", s.handleRequestCert)
+		r.Post("/submit-csr", s.handleSubmitCSR)
 		r.Get("/status/{hostname}", s.handleGetStatus)
 	})
-
-	// Public endpoint — no auth required
-	r.Get("/cert/{hostname}/fullchain.crt", s.handleGetCert)
 
 	s.router = r
 }

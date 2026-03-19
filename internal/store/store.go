@@ -16,8 +16,8 @@ type CertRequest struct {
 	ID          int64
 	Hostname    string
 	CSRPEM      string
-	TXTFQDN     string
-	TXTValue    string
+	CSRPath     string
+	SubmittedBy string
 	Status      string
 	ErrorMsg    *string
 	CreatedAt   string
@@ -59,9 +59,9 @@ func migrate(db *sql.DB) error {
 			id           INTEGER PRIMARY KEY,
 			hostname     TEXT NOT NULL,
 			csr_pem      TEXT NOT NULL,
-			txt_fqdn     TEXT NOT NULL,
-			txt_value    TEXT NOT NULL,
-			status       TEXT NOT NULL DEFAULT 'pending_dns',
+			csr_path     TEXT NOT NULL,
+			submitted_by TEXT NOT NULL,
+			status       TEXT NOT NULL DEFAULT 'submitted',
 			error_msg    TEXT,
 			created_at   TEXT NOT NULL,
 			completed_at TEXT
@@ -88,9 +88,9 @@ func (s *Store) Close() error {
 
 func (s *Store) InsertCertRequest(r *CertRequest) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO cert_requests (hostname, csr_pem, txt_fqdn, txt_value, status, created_at)
+		`INSERT INTO cert_requests (hostname, csr_pem, csr_path, submitted_by, status, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		r.Hostname, r.CSRPEM, r.TXTFQDN, r.TXTValue, r.Status, r.CreatedAt,
+		r.Hostname, r.CSRPEM, r.CSRPath, r.SubmittedBy, r.Status, r.CreatedAt,
 	)
 	if err != nil {
 		return 0, err
@@ -100,12 +100,12 @@ func (s *Store) InsertCertRequest(r *CertRequest) (int64, error) {
 
 func (s *Store) GetLatestByHostname(hostname string) (*CertRequest, error) {
 	row := s.db.QueryRow(
-		`SELECT id, hostname, csr_pem, txt_fqdn, txt_value, status, error_msg, created_at, completed_at
+		`SELECT id, hostname, csr_pem, csr_path, submitted_by, status, error_msg, created_at, completed_at
 		 FROM cert_requests WHERE hostname = ? ORDER BY id DESC LIMIT 1`,
 		hostname,
 	)
 	r := &CertRequest{}
-	err := row.Scan(&r.ID, &r.Hostname, &r.CSRPEM, &r.TXTFQDN, &r.TXTValue, &r.Status, &r.ErrorMsg, &r.CreatedAt, &r.CompletedAt)
+	err := row.Scan(&r.ID, &r.Hostname, &r.CSRPEM, &r.CSRPath, &r.SubmittedBy, &r.Status, &r.ErrorMsg, &r.CreatedAt, &r.CompletedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -123,18 +123,10 @@ func (s *Store) UpdateStatus(id int64, status string, errorMsg *string) error {
 	return err
 }
 
-func (s *Store) UpdateChallengeData(id int64, fqdn, value string) error {
-	_, err := s.db.Exec(
-		`UPDATE cert_requests SET txt_fqdn = ?, txt_value = ? WHERE id = ?`,
-		fqdn, value, id,
-	)
-	return err
-}
-
-func (s *Store) MarkCompleted(id int64) error {
+func (s *Store) MarkComplete(id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.Exec(
-		`UPDATE cert_requests SET status = 'issued', completed_at = ? WHERE id = ?`,
+		`UPDATE cert_requests SET status = 'complete', completed_at = ? WHERE id = ?`,
 		now, id,
 	)
 	return err

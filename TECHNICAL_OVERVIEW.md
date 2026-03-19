@@ -4,12 +4,13 @@ Last updated: 2026-03-19
 
 ## What this is
 
-An HTTP API that automates Let's Encrypt certificate issuance via DNS-01 challenges, with bearer token auth and a SQLite backend.
+A self-service HTTP API for submitting Certificate Signing Requests (CSRs). Users submit a CSR via a bearer-token-authed endpoint. The API validates it, saves it to disk, and records the submission in SQLite. This removes the human bottleneck from the certificate request process -- no more chasing people on Teams or raising helpdesk tickets.
+
+Certificate issuance and renewals are handled by central IT's existing tooling on `acme.cent.gla.ac.uk` (using `newcert`, `acme.sh`, and CNAME delegation to an `acme-dns` stub zone). This API is the self-service front door that feeds CSRs into that process.
 
 ## Stack
 
 - Go 1.22+
-- [lego v4](https://github.com/go-acme/lego) for the ACME protocol
 - [chi v5](https://github.com/go-chi/chi) for HTTP routing
 - [kong](https://github.com/alecthomas/kong) for CLI parsing
 - [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) for pure-Go SQLite (no CGo)
@@ -22,54 +23,43 @@ internal/
   store/store.go            # SQLite schema, all CRUD methods
   auth/
     auth.go                 # Token generation (crypto/rand), SHA-256 hashing
-    middleware.go           # Bearer token chi middleware
-  acme/
-    provider.go             # Custom DNS-01 provider (channel-based)
-    account.go              # ECDSA P-256 key management, registration.User impl
-    client.go               # ObtainCert orchestrator, CertObtainer interface
+    middleware.go           # Bearer token chi middleware, injects ForWhom into context
   server/
     server.go               # Server struct, http.Handler
     routes.go               # Chi router with auth middleware
-    handlers.go             # POST /request-cert, GET /status/{hostname}, GET /cert/{hostname}/fullchain.crt
+    handlers.go             # POST /submit-csr, GET /status/{hostname}
 ```
 
-## How the ACME flow works
-
-This is the non-obvious part. Lego's `ObtainForCSR()` is a blocking call that handles the entire ACME lifecycle internally. The trick is a custom DNS-01 provider that uses a Go channel to extract the challenge data mid-flow:
+## How it works
 
 ```
-HTTP handler
+User generates CSR (openssl)
   |
-  +-- creates per-request Provider (buffered chan, size 1)
-  +-- starts goroutine: lego.ObtainForCSR()
-  |       |
-  |       +-- lego calls Provider.Present()
-  |       |       |
-  |       |       +-- sends ChallengeData on channel
-  |       |
-  |   <-- reads from channel (30s timeout)
-  |   returns TXT details to caller
+  +-- POST /submit-csr with bearer token
+  |     |
+  |     +-- Validate CSR (real PEM, has CN or SANs)
+  |     +-- Save to disk: {csrs-dir}/{token-owner}/{hostname}.csr
+  |     +-- Record in SQLite (status: submitted)
+  |     +-- Return 202 Accepted
   |
-  |       +-- lego polls DNS for propagation
-  |       +-- lego finalises with CA
-  |       +-- goroutine saves cert, updates DB
+  +-- GET /status/{hostname} to check progress
 ```
 
-Each request gets its own Provider instance. No shared mutable state between requests.
+The CSR is saved to disk organised by token owner (e.g. `data/csrs/alice/app.example.ac.uk.csr`), giving a clear audit trail of who requested what.
 
 ## Database schema
 
 Two tables in SQLite with WAL mode enabled:
 
-**cert_requests** tracks the lifecycle of each certificate order:
-- `hostname`, `csr_pem`, `txt_fqdn`, `txt_value`
-- `status`: `pending_dns` -> `issued` | `failed` | `timed_out`
+**cert_requests** tracks the lifecycle of each CSR submission:
+- `hostname`, `csr_pem`, `csr_path`, `submitted_by`
+- `status`: `submitted` -> `processing` -> `complete` | `failed`
 - `error_msg`: populated on failure
 - `created_at`, `completed_at`
 
 **auth_tokens** stores bearer tokens:
 - `token_hash` (SHA-256, unique), `token_prefix` (first 8 chars, for revocation lookup)
-- `for_whom`: human-readable description
+- `for_whom`: human-readable description (also used as the disk directory name)
 - `revoked`: 0 or 1
 - `last_used`: updated on each authenticated request
 
@@ -77,47 +67,32 @@ Two tables in SQLite with WAL mode enabled:
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| POST | `/request-cert` | Bearer token | Submit `{hostname, b64_csr}`, get back TXT record details |
-| GET | `/status/{hostname}` | Bearer token | Poll for current request state |
-| GET | `/cert/{hostname}/fullchain.crt` | None | Download the issued certificate (full chain, PEM) |
+| POST | `/submit-csr` | Bearer token | Submit `{hostname, b64_csr}`, CSR saved to disk and recorded in DB |
+| GET | `/status/{hostname}` | Bearer token | Check current submission state |
 
-The cert download endpoint has no auth. IT staff request the certs, but the people fetching them (students, researchers, whoever runs the web server) are usually different, and certificates are public anyway -- they go over the wire in every TLS handshake. If you want to restrict which hostnames can be served, `--allowed-domain` takes a suffix (e.g. `--allowed-domain .ourplace.ac.uk`).
-
-The handler checks the DB to confirm the cert has status `issued` before reading the file from disk, so pending or failed requests get a meaningful error rather than a raw 404.
+Both endpoints require bearer token auth. The middleware extracts the token's `for_whom` field and injects it into the request context, so the handler knows who submitted the CSR and can organise files accordingly.
 
 ## CLI subcommands
 
 | Command | Purpose |
 |---------|---------|
-| `serve --acme-email <email>` | Start the API server |
+| `serve` | Start the API server |
 | `create-token <for-whom>` | Generate a new bearer token, print it once |
 | `revoke-token <prefix>` | Revoke by 8-char prefix |
 | `list-tokens` | CSV dump of all tokens |
 
 All commands share a `--db-path` flag (default `data/certs.db`, env `CSR_API_DB_PATH`).
 
-## Interfaces
-
-`CertObtainer` in `internal/acme/client.go` is the main seam for testing:
-
-```go
-type CertObtainer interface {
-    ObtainCert(ctx context.Context, csrPEM []byte, hostname string) (*ChallengeData, error)
-}
-```
-
-The server package depends on this interface, not the concrete `Client`. Handler tests use a `mockObtainer`.
-
 ## Authentication
 
-Bearer tokens, hashed with SHA-256 before storage. The middleware (`internal/auth/middleware.go`) extracts the token from the `Authorization` header, hashes it, looks it up in the DB, checks the `revoked` flag, and updates `last_used`.
+Bearer tokens, hashed with SHA-256 before storage. The middleware (`internal/auth/middleware.go`) extracts the token from the `Authorization` header, hashes it, looks it up in the DB, checks the `revoked` flag, updates `last_used`, and injects `for_whom` into the request context.
 
-No roles or permissions beyond "has a valid token". The `/cert/` download endpoint skips auth (see API endpoints above for why).
+No roles or permissions beyond "has a valid token".
 
 ## Testing
 
 - Framework: `testing` (stdlib)
-- Pattern: table-driven where appropriate, `:memory:` SQLite for store/auth tests, mock `CertObtainer` for handler tests
+- Pattern: table-driven where appropriate, `:memory:` SQLite for store/auth tests, real CSR generation (`makeCSRPEM` helper) for handler tests
 - Run: `go test ./...`
 
 ## Releases
@@ -129,7 +104,7 @@ GitHub Actions workflow (`.github/workflows/release.yml`) builds a matrix of 6 b
 ```bash
 go build ./cmd/csr-api
 ./csr-api create-token "dev"
-./csr-api serve --acme-email test@example.com
+./csr-api serve
 ```
 
-The default ACME directory is Let's Encrypt staging. Data goes into `data/`.
+Data goes into `data/`. CSRs are saved under `data/csrs/`.
