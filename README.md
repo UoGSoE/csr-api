@@ -99,6 +99,112 @@ Returns the current state of the request (`pending_dns`, `issued`, `failed`, or 
 ./csr-api revoke-token <prefix>      # revoke by 8-char prefix
 ```
 
+## Example scripts
+
+### Requesting a certificate
+
+This script generates a private key and CSR with `openssl`, then submits it to the API. It prints the TXT record you need to create in DNS.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Configuration ---
+API_URL="https://csr-api.example.ac.uk"
+API_TOKEN="your-bearer-token-here"
+HOSTNAME="app.example.ac.uk"
+KEY_FILE="${HOSTNAME}.key"
+CSR_FILE="${HOSTNAME}.csr"
+
+# --- Generate a private key and CSR ---
+openssl ecparam -genkey -name prime256v1 -noout -out "$KEY_FILE"
+openssl req -new -key "$KEY_FILE" -out "$CSR_FILE" -subj "/CN=${HOSTNAME}"
+
+echo "Generated key: ${KEY_FILE}"
+echo "Generated CSR: ${CSR_FILE}"
+
+# --- Base64-encode the CSR and submit ---
+# -w0 avoids line wrapping (Linux). On macOS, base64 doesn't wrap by default.
+B64_CSR=$(base64 -w0 < "$CSR_FILE" 2>/dev/null || base64 < "$CSR_FILE" | tr -d '\n')
+
+RESPONSE=$(curl -s -X POST "${API_URL}/request-cert" \
+  -H "Authorization: Bearer ${API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"hostname\": \"${HOSTNAME}\", \"b64_csr\": \"${B64_CSR}\"}")
+
+echo "$RESPONSE" | python3 -m json.tool
+
+# --- Show what to do next ---
+TXT_NAME=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['txt_record_name'])")
+TXT_VALUE=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['txt_record_value'])")
+
+echo ""
+echo "Create this DNS TXT record:"
+echo "  ${TXT_NAME}  TXT  \"${TXT_VALUE}\""
+echo ""
+echo "Once the record is in place, the API will detect it and finalise the certificate."
+echo "Run the download script to poll for completion and fetch the cert."
+```
+
+### Downloading the certificate
+
+This script polls the status endpoint until the certificate is issued, then downloads it. Uncomment the block at the end to install it for nginx.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Configuration ---
+API_URL="https://csr-api.example.ac.uk"
+API_TOKEN="your-bearer-token-here"
+HOSTNAME="app.example.ac.uk"
+POLL_INTERVAL=30   # seconds between checks
+MAX_ATTEMPTS=120   # give up after this many attempts (~1 hour at 30s)
+
+# --- Poll until issued ---
+echo "Waiting for certificate to be issued for ${HOSTNAME}..."
+
+for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
+  STATUS=$(curl -s "${API_URL}/status/${HOSTNAME}" \
+    -H "Authorization: Bearer ${API_TOKEN}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))")
+
+  case "$STATUS" in
+    issued)
+      echo "Certificate issued!"
+      break
+      ;;
+    pending_dns)
+      echo "  [${i}/${MAX_ATTEMPTS}] Status: ${STATUS} — waiting ${POLL_INTERVAL}s..."
+      sleep "$POLL_INTERVAL"
+      ;;
+    failed|timed_out)
+      echo "  Certificate request ${STATUS}. Check the API logs for details."
+      exit 1
+      ;;
+    *)
+      echo "  Unexpected status: ${STATUS}"
+      exit 1
+      ;;
+  esac
+done
+
+if [ "$STATUS" != "issued" ]; then
+  echo "Timed out waiting for certificate."
+  exit 1
+fi
+
+# --- Download the full chain ---
+curl -s "${API_URL}/cert/${HOSTNAME}/fullchain.crt" -o "${HOSTNAME}.fullchain.crt"
+echo "Saved to ${HOSTNAME}.fullchain.crt"
+
+# --- Optional: install for nginx ---
+# sudo cp "${HOSTNAME}.fullchain.crt" /etc/ssl/certs/${HOSTNAME}.crt
+# sudo cp "${HOSTNAME}.key" /etc/ssl/private/${HOSTNAME}.key
+# sudo systemctl reload nginx
+# echo "Installed and nginx reloaded."
+```
+
 ## Configuration
 
 | Flag | Env var | Default | Description |
