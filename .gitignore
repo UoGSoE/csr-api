@@ -1,5 +1,5 @@
 # Binary
-csr-api
+/csr-api
 
 # Data directory (db, certs, account key)
 data/
