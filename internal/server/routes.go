@@ -19,5 +19,8 @@ func (s *Server) setupRoutes() {
 		r.Get("/status/{hostname}", s.handleGetStatus)
 	})
 
+	// Public endpoint — no auth required
+	r.Get("/cert/{hostname}/fullchain.crt", s.handleGetCert)
+
 	s.router = r
 }

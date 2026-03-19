@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/billyraycyrus/csr-api/internal/acme"
@@ -24,7 +26,17 @@ func (m *mockObtainer) ObtainCert(_ context.Context, _ []byte, _ string) (*acme.
 	return m.challengeData, m.err
 }
 
+type testServerOpts struct {
+	obtainer      acme.CertObtainer
+	allowedDomain string
+}
+
 func newTestServer(t *testing.T, obtainer acme.CertObtainer) (*Server, *store.Store) {
+	t.Helper()
+	return newTestServerWithOpts(t, testServerOpts{obtainer: obtainer})
+}
+
+func newTestServerWithOpts(t *testing.T, opts testServerOpts) (*Server, *store.Store) {
 	t.Helper()
 	st, err := store.New(":memory:")
 	if err != nil {
@@ -32,10 +44,16 @@ func newTestServer(t *testing.T, obtainer acme.CertObtainer) (*Server, *store.St
 	}
 	t.Cleanup(func() { st.Close() })
 
+	if opts.obtainer == nil {
+		opts.obtainer = &mockObtainer{}
+	}
+
 	srv := &Server{
-		obtainer: obtainer,
-		store:    st,
-		logger:   slog.Default(),
+		obtainer:      opts.obtainer,
+		store:         st,
+		logger:        slog.Default(),
+		certsDir:      t.TempDir(),
+		allowedDomain: opts.allowedDomain,
 	}
 	return srv, st
 }
@@ -159,5 +177,121 @@ func TestHandleGetStatus_NotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleGetCert_Success(t *testing.T) {
+	srv, st := newTestServer(t, &mockObtainer{})
+
+	id, _ := st.InsertCertRequest(&store.CertRequest{
+		Hostname:  "app.example.com",
+		CSRPEM:    "fake",
+		TXTFQDN:   "_acme-challenge.app.example.com.",
+		TXTValue:  "abc123",
+		Status:    "pending_dns",
+		CreatedAt: "2026-03-18T10:00:00Z",
+	})
+	st.MarkCompleted(id)
+
+	certPEM := "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
+	os.WriteFile(filepath.Join(srv.certsDir, "app.example.com.pem"), []byte(certPEM), 0o644)
+
+	req := httptest.NewRequest("GET", "/cert/app.example.com/fullchain.crt", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("hostname", "app.example.com")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	srv.handleGetCert(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/pem-certificate-chain" {
+		t.Errorf("content-type = %q", ct)
+	}
+	if rec.Body.String() != certPEM {
+		t.Errorf("body = %q, want %q", rec.Body.String(), certPEM)
+	}
+}
+
+func TestHandleGetCert_NotYetIssued(t *testing.T) {
+	srv, st := newTestServer(t, &mockObtainer{})
+
+	st.InsertCertRequest(&store.CertRequest{
+		Hostname:  "app.example.com",
+		CSRPEM:    "fake",
+		TXTFQDN:   "_acme-challenge.app.example.com.",
+		TXTValue:  "abc123",
+		Status:    "pending_dns",
+		CreatedAt: "2026-03-18T10:00:00Z",
+	})
+
+	req := httptest.NewRequest("GET", "/cert/app.example.com/fullchain.crt", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("hostname", "app.example.com")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	srv.handleGetCert(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleGetCert_NoRequest(t *testing.T) {
+	srv, _ := newTestServer(t, &mockObtainer{})
+
+	req := httptest.NewRequest("GET", "/cert/unknown.example.com/fullchain.crt", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("hostname", "unknown.example.com")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	srv.handleGetCert(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleGetCert_AllowedDomain(t *testing.T) {
+	srv, st := newTestServerWithOpts(t, testServerOpts{allowedDomain: ".ourplace.ac.uk"})
+
+	id, _ := st.InsertCertRequest(&store.CertRequest{
+		Hostname:  "app.ourplace.ac.uk",
+		CSRPEM:    "fake",
+		TXTFQDN:   "_acme-challenge.app.ourplace.ac.uk.",
+		TXTValue:  "abc123",
+		Status:    "pending_dns",
+		CreatedAt: "2026-03-18T10:00:00Z",
+	})
+	st.MarkCompleted(id)
+
+	certPEM := "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
+	os.WriteFile(filepath.Join(srv.certsDir, "app.ourplace.ac.uk.pem"), []byte(certPEM), 0o644)
+
+	req := httptest.NewRequest("GET", "/cert/app.ourplace.ac.uk/fullchain.crt", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("hostname", "app.ourplace.ac.uk")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	srv.handleGetCert(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleGetCert_DomainRestricted(t *testing.T) {
+	srv, _ := newTestServerWithOpts(t, testServerOpts{allowedDomain: ".ourplace.ac.uk"})
+
+	req := httptest.NewRequest("GET", "/cert/evil.example.com/fullchain.crt", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("hostname", "evil.example.com")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	srv.handleGetCert(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }

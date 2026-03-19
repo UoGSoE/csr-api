@@ -4,6 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -77,6 +80,42 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   cr.CreatedAt,
 		CompletedAt: cr.CompletedAt,
 	})
+}
+
+func (s *Server) handleGetCert(w http.ResponseWriter, r *http.Request) {
+	hostname := chi.URLParam(r, "hostname")
+
+	if s.allowedDomain != "" && !strings.HasSuffix(hostname, s.allowedDomain) {
+		writeError(w, http.StatusForbidden, "hostname not allowed")
+		return
+	}
+
+	cr, err := s.store.GetLatestByHostname(hostname)
+	if err != nil {
+		s.logger.Error("get cert failed", "hostname", hostname, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if cr == nil {
+		writeError(w, http.StatusNotFound, "no certificate request found for this hostname")
+		return
+	}
+	if cr.Status != "issued" {
+		writeError(w, http.StatusNotFound, "certificate not yet issued (status: "+cr.Status+")")
+		return
+	}
+
+	certPath := filepath.Join(s.certsDir, hostname+".pem")
+	pemData, err := os.ReadFile(certPath)
+	if err != nil {
+		s.logger.Error("read cert file failed", "hostname", hostname, "path", certPath, "err", err)
+		writeError(w, http.StatusNotFound, "certificate file not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/pem-certificate-chain")
+	w.Header().Set("Content-Disposition", "inline; filename=fullchain.crt")
+	w.Write(pemData)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

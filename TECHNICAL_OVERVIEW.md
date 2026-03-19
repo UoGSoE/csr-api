@@ -1,6 +1,6 @@
 # Technical overview
 
-Last updated: 2026-03-18
+Last updated: 2026-03-19
 
 ## What this is
 
@@ -30,7 +30,7 @@ internal/
   server/
     server.go               # Server struct, http.Handler
     routes.go               # Chi router with auth middleware
-    handlers.go             # POST /request-cert, GET /status/{hostname}
+    handlers.go             # POST /request-cert, GET /status/{hostname}, GET /cert/{hostname}/fullchain.crt
 ```
 
 ## How the ACME flow works
@@ -75,12 +75,15 @@ Two tables in SQLite with WAL mode enabled:
 
 ## API endpoints
 
-Both require `Authorization: Bearer <token>`.
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/request-cert` | Bearer token | Submit `{hostname, b64_csr}`, get back TXT record details |
+| GET | `/status/{hostname}` | Bearer token | Poll for current request state |
+| GET | `/cert/{hostname}/fullchain.crt` | None | Download the issued certificate (full chain, PEM) |
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/request-cert` | Submit `{hostname, b64_csr}`, get back TXT record details |
-| GET | `/status/{hostname}` | Poll for current request state |
+The cert download endpoint has no auth. IT staff request the certs, but the people fetching them (students, researchers, whoever runs the web server) are usually different, and certificates are public anyway -- they go over the wire in every TLS handshake. If you want to restrict which hostnames can be served, `--allowed-domain` takes a suffix (e.g. `--allowed-domain .ourplace.ac.uk`).
+
+The handler checks the DB to confirm the cert has status `issued` before reading the file from disk, so pending or failed requests get a meaningful error rather than a raw 404.
 
 ## CLI subcommands
 
@@ -109,7 +112,7 @@ The server package depends on this interface, not the concrete `Client`. Handler
 
 Bearer tokens, hashed with SHA-256 before storage. The middleware (`internal/auth/middleware.go`) extracts the token from the `Authorization` header, hashes it, looks it up in the DB, checks the `revoked` flag, and updates `last_used`.
 
-No roles or permissions beyond "has a valid token".
+No roles or permissions beyond "has a valid token". The `/cert/` download endpoint skips auth (see API endpoints above for why).
 
 ## Testing
 

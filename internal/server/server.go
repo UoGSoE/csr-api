@@ -10,23 +10,29 @@ import (
 )
 
 type Server struct {
-	obtainer acme.CertObtainer
-	store    *store.Store
-	router   chi.Router
-	logger   *slog.Logger
+	obtainer      acme.CertObtainer
+	store         *store.Store
+	router        chi.Router
+	logger        *slog.Logger
+	certsDir      string
+	allowedDomain string
 }
 
 type Config struct {
-	Obtainer acme.CertObtainer
-	Store    *store.Store
-	Logger   *slog.Logger
+	Obtainer      acme.CertObtainer
+	Store         *store.Store
+	Logger        *slog.Logger
+	CertsDir      string
+	AllowedDomain string
 }
 
 func New(cfg Config) *Server {
 	s := &Server{
-		obtainer: cfg.Obtainer,
-		store:    cfg.Store,
-		logger:   cfg.Logger,
+		obtainer:      cfg.Obtainer,
+		store:         cfg.Store,
+		logger:        cfg.Logger,
+		certsDir:      cfg.CertsDir,
+		allowedDomain: cfg.AllowedDomain,
 	}
 	s.setupRoutes()
 	return s

@@ -6,7 +6,9 @@ An HTTP API that automates ACME certificate issuance using DNS-01 challenges. Yo
 
 You POST a hostname and a base64-encoded CSR. The API starts an ACME order against Let's Encrypt (or any ACME-compatible CA) and returns the DNS-01 challenge details. You create the TXT record in your own DNS. The API watches for the record and, once it propagates, completes the ACME flow and saves the issued certificate to disk.
 
-Authentication is via bearer tokens. Tokens are SHA-256 hashed before storage, so the raw token only appears once at creation time.
+Once a certificate is issued, anyone can download it from a public endpoint -- no token needed. The IT team (who hold the bearer tokens) handle the CSR submission, but the person actually setting up the web server might be a student or a research group who shouldn't need API credentials just to grab a cert. Certificates are public data anyway. If you'd rather limit which hostnames can be downloaded, there's an `--allowed-domain` flag that filters by suffix (e.g. `.ourplace.ac.uk`).
+
+Authentication for certificate requests and status checks is via bearer tokens. Tokens are SHA-256 hashed before storage, so the raw token only appears once at creation time.
 
 Compiles to a single static binary with an embedded SQLite database -- nothing else to install or run.
 
@@ -70,6 +72,16 @@ The response includes the TXT record to create:
 }
 ```
 
+### Download a certificate
+
+Once the status shows `issued`, grab the full chain -- no token needed:
+
+```bash
+curl http://localhost:8443/cert/app.example.com/fullchain.crt -o fullchain.crt
+```
+
+If the cert isn't ready yet you'll get the current status back instead.
+
 ### Check status
 
 ```bash
@@ -99,6 +111,7 @@ Returns the current state of the request (`pending_dns`, `issued`, `failed`, or 
 | `--dns-servers` | `CSR_API_DNS_SERVERS` | system resolvers | DNS servers for propagation checks |
 | `--poll-timeout` | `CSR_API_POLL_TIMEOUT` | `2h` | Give up after this long |
 | `--poll-interval` | `CSR_API_POLL_INTERVAL` | `2m` | Time between DNS checks |
+| `--allowed-domain` | `CSR_API_ALLOWED_DOMAIN` | (none) | Only allow cert downloads for hostnames ending in this suffix |
 
 ## Logging
 
