@@ -133,15 +133,40 @@ func (cmd *RevokeTokenCmd) Run(cli *CLI) error {
 	}
 	defer st.Close()
 
-	found, err := st.RevokeTokenByPrefix(cmd.TokenPrefix)
+	tokens, err := st.FindActiveTokensByPrefix(cmd.TokenPrefix)
 	if err != nil {
-		return fmt.Errorf("revoke token: %w", err)
+		return fmt.Errorf("find tokens: %w", err)
 	}
-	if !found {
-		fmt.Println("No token found with that prefix.")
+
+	if len(tokens) == 0 {
+		fmt.Println("No active token found with that prefix.")
 		return nil
 	}
-	fmt.Println("Token revoked.")
+
+	var target store.AuthToken
+	if len(tokens) == 1 {
+		target = tokens[0]
+	} else {
+		fmt.Printf("Multiple active tokens share prefix %s:\n\n", cmd.TokenPrefix)
+		for i, t := range tokens {
+			fmt.Printf("  %d) %s (created %s)\n", i+1, t.ForWhom, t.CreatedAt)
+		}
+		fmt.Printf("\nWhich token do you want to revoke? (1-%d, Ctrl-C to abort): ", len(tokens))
+
+		var choice int
+		if _, err := fmt.Scan(&choice); err != nil {
+			return fmt.Errorf("read choice: %w", err)
+		}
+		if choice < 1 || choice > len(tokens) {
+			return fmt.Errorf("invalid choice: %d", choice)
+		}
+		target = tokens[choice-1]
+	}
+
+	if err := st.RevokeTokenByID(target.ID); err != nil {
+		return fmt.Errorf("revoke token: %w", err)
+	}
+	fmt.Printf("Token revoked (prefix: %s, owner: %s).\n", target.TokenPrefix, target.ForWhom)
 	return nil
 }
 

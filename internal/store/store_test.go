@@ -144,7 +144,7 @@ func TestInsertAndGetToken(t *testing.T) {
 	}
 }
 
-func TestRevokeTokenByPrefix(t *testing.T) {
+func TestFindActiveTokensByPrefix(t *testing.T) {
 	s := newTestStore(t)
 
 	s.InsertToken(&AuthToken{
@@ -154,29 +154,96 @@ func TestRevokeTokenByPrefix(t *testing.T) {
 		CreatedAt:   "2026-03-18T10:00:00Z",
 	})
 
-	found, err := s.RevokeTokenByPrefix("abc12345")
+	tokens, err := s.FindActiveTokensByPrefix("abc12345")
 	if err != nil {
-		t.Fatalf("revoke: %v", err)
+		t.Fatalf("find: %v", err)
 	}
-	if !found {
-		t.Error("expected found=true")
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(tokens))
+	}
+	if tokens[0].ForWhom != "test-user" {
+		t.Errorf("for_whom = %q, want %q", tokens[0].ForWhom, "test-user")
+	}
+}
+
+func TestFindActiveTokensByPrefix_ExcludesRevoked(t *testing.T) {
+	s := newTestStore(t)
+
+	s.InsertToken(&AuthToken{
+		TokenHash:   "abc123hash",
+		TokenPrefix: "abc12345",
+		ForWhom:     "test-user",
+		CreatedAt:   "2026-03-18T10:00:00Z",
+	})
+
+	tok, _ := s.GetTokenByHash("abc123hash")
+	s.RevokeTokenByID(tok.ID)
+
+	tokens, err := s.FindActiveTokensByPrefix("abc12345")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("expected 0 active tokens, got %d", len(tokens))
+	}
+}
+
+func TestFindActiveTokensByPrefix_MultipleMatches(t *testing.T) {
+	s := newTestStore(t)
+
+	s.InsertToken(&AuthToken{
+		TokenHash:   "hash1",
+		TokenPrefix: "abc12345",
+		ForWhom:     "glasgow-cs",
+		CreatedAt:   "2026-03-18T10:00:00Z",
+	})
+	s.InsertToken(&AuthToken{
+		TokenHash:   "hash2",
+		TokenPrefix: "abc12345",
+		ForWhom:     "glasgow-eng",
+		CreatedAt:   "2026-03-19T10:00:00Z",
+	})
+
+	tokens, err := s.FindActiveTokensByPrefix("abc12345")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+	}
+}
+
+func TestFindActiveTokensByPrefix_NotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	tokens, err := s.FindActiveTokensByPrefix("nonexist")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("expected 0 tokens, got %d", len(tokens))
+	}
+}
+
+func TestRevokeTokenByID(t *testing.T) {
+	s := newTestStore(t)
+
+	s.InsertToken(&AuthToken{
+		TokenHash:   "abc123hash",
+		TokenPrefix: "abc12345",
+		ForWhom:     "test-user",
+		CreatedAt:   "2026-03-18T10:00:00Z",
+	})
+
+	tok, _ := s.GetTokenByHash("abc123hash")
+
+	if err := s.RevokeTokenByID(tok.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
 	}
 
 	got, _ := s.GetTokenByHash("abc123hash")
 	if !got.Revoked {
 		t.Error("expected revoked=true")
-	}
-}
-
-func TestRevokeTokenByPrefix_NotFound(t *testing.T) {
-	s := newTestStore(t)
-
-	found, err := s.RevokeTokenByPrefix("nonexist")
-	if err != nil {
-		t.Fatalf("revoke: %v", err)
-	}
-	if found {
-		t.Error("expected found=false")
 	}
 }
 

@@ -162,19 +162,33 @@ func (s *Store) GetTokenByHash(hash string) (*AuthToken, error) {
 	return t, nil
 }
 
-func (s *Store) RevokeTokenByPrefix(prefix string) (bool, error) {
-	res, err := s.db.Exec(
-		`UPDATE auth_tokens SET revoked = 1 WHERE token_prefix = ? AND revoked = 0`,
+func (s *Store) FindActiveTokensByPrefix(prefix string) ([]AuthToken, error) {
+	rows, err := s.db.Query(
+		`SELECT id, token_hash, token_prefix, for_whom, created_at, last_used, revoked
+		 FROM auth_tokens WHERE token_prefix = ? AND revoked = 0`,
 		prefix,
 	)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
+	defer rows.Close()
+
+	var tokens []AuthToken
+	for rows.Next() {
+		var t AuthToken
+		var revoked int
+		if err := rows.Scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.ForWhom, &t.CreatedAt, &t.LastUsed, &revoked); err != nil {
+			return nil, err
+		}
+		t.Revoked = revoked != 0
+		tokens = append(tokens, t)
 	}
-	return n > 0, nil
+	return tokens, rows.Err()
+}
+
+func (s *Store) RevokeTokenByID(id int64) error {
+	_, err := s.db.Exec(`UPDATE auth_tokens SET revoked = 1 WHERE id = ?`, id)
+	return err
 }
 
 func (s *Store) ListTokens() ([]AuthToken, error) {

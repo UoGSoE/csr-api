@@ -81,6 +81,8 @@ Returns the current state of the submission (`submitted`, `processing`, `complet
 ./csr-api revoke-token <prefix>      # revoke by 8-char prefix
 ```
 
+In the unlikely event that two tokens share the same 8-character prefix, `revoke-token` will list the matches and ask you to pick which one to revoke rather than blindly revoking both.
+
 ## Example script
 
 This script generates a private key and CSR with `openssl`, then submits it to the API.

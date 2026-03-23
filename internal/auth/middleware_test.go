@@ -98,7 +98,8 @@ func TestBearerAuth_RevokedToken(t *testing.T) {
 	s := newTestStore(t)
 	rawToken := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	insertTestToken(t, s, rawToken)
-	s.RevokeTokenByPrefix(TokenPrefix(rawToken))
+	tok, _ := s.GetTokenByHash(HashToken(rawToken))
+	s.RevokeTokenByID(tok.ID)
 
 	handler := BearerAuth(s, testLogger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
