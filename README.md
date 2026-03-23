@@ -81,7 +81,7 @@ Returns the current state of the submission (`submitted`, `processing`, `complet
 ./csr-api revoke-token <prefix>      # revoke by 8-char prefix
 ```
 
-In the unlikely event that two tokens share the same 8-character prefix, `revoke-token` will list the matches and ask you to pick which one to revoke rather than blindly revoking both.
+In the unlikely event that two tokens share the same 8-character prefix, `revoke-token` will list the matches and ask you to pick which one to revoke.
 
 ## Example script
 
