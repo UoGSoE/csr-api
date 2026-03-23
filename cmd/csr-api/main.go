@@ -73,8 +73,12 @@ func (cmd *ServeCmd) Run(cli *CLI) error {
 	})
 
 	httpServer := &http.Server{
-		Addr:    cmd.Addr,
-		Handler: srv,
+		Addr:              cmd.Addr,
+		Handler:           srv,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	done := make(chan os.Signal, 1)

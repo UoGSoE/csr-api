@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
+	"strings"
 	"os"
 	"path/filepath"
 	"time"
@@ -36,6 +37,8 @@ type statusOut struct {
 }
 
 func (s *Server) handleSubmitCSR(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10) // 32 KB
+
 	var req submitCSRIn
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -53,7 +56,7 @@ func (s *Server) handleSubmitCSR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validateCSR(csrPEM); err != nil {
+	if err := validateCSR(csrPEM, req.Hostname); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -69,6 +72,10 @@ func (s *Server) handleSubmitCSR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	csrPath := filepath.Join(ownerDir, req.Hostname+".csr")
+	if !filepath.IsAbs(csrPath) || filepath.Dir(csrPath) != ownerDir {
+		writeError(w, http.StatusBadRequest, "invalid hostname")
+		return
+	}
 	if err := os.WriteFile(csrPath, csrPEM, 0o644); err != nil {
 		s.logger.Error("write csr failed", "path", csrPath, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -102,8 +109,9 @@ func (s *Server) handleSubmitCSR(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	hostname := chi.URLParam(r, "hostname")
+	owner := auth.ForWhomFromContext(r.Context())
 
-	cr, err := s.store.GetLatestByHostname(hostname)
+	cr, err := s.store.GetLatestByHostnameAndOwner(hostname, owner)
 	if err != nil {
 		s.logger.Error("get status failed", "hostname", hostname, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -123,7 +131,7 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func validateCSR(csrPEM []byte) error {
+func validateCSR(csrPEM []byte, hostname string) error {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
 		return &validationError{"no PEM block found in CSR"}
@@ -135,7 +143,25 @@ func validateCSR(csrPEM []byte) error {
 	if csr.Subject.CommonName == "" && len(csr.DNSNames) == 0 {
 		return &validationError{"CSR has no CN and no SANs"}
 	}
+	if err := csr.CheckSignature(); err != nil {
+		return &validationError{"CSR signature verification failed"}
+	}
+	if !csrMatchesHostname(csr, hostname) {
+		return &validationError{"hostname does not match CSR's CN or SANs"}
+	}
 	return nil
+}
+
+func csrMatchesHostname(csr *x509.CertificateRequest, hostname string) bool {
+	if strings.EqualFold(csr.Subject.CommonName, hostname) {
+		return true
+	}
+	for _, san := range csr.DNSNames {
+		if strings.EqualFold(san, hostname) {
+			return true
+		}
+	}
+	return false
 }
 
 type validationError struct {

@@ -115,6 +115,23 @@ func (s *Store) GetLatestByHostname(hostname string) (*CertRequest, error) {
 	return r, nil
 }
 
+func (s *Store) GetLatestByHostnameAndOwner(hostname, owner string) (*CertRequest, error) {
+	row := s.db.QueryRow(
+		`SELECT id, hostname, csr_pem, csr_path, submitted_by, status, error_msg, created_at, completed_at
+		 FROM cert_requests WHERE hostname = ? AND submitted_by = ? ORDER BY id DESC LIMIT 1`,
+		hostname, owner,
+	)
+	r := &CertRequest{}
+	err := row.Scan(&r.ID, &r.Hostname, &r.CSRPEM, &r.CSRPath, &r.SubmittedBy, &r.Status, &r.ErrorMsg, &r.CreatedAt, &r.CompletedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 func (s *Store) UpdateStatus(id int64, status string, errorMsg *string) error {
 	_, err := s.db.Exec(
 		`UPDATE cert_requests SET status = ?, error_msg = ? WHERE id = ?`,

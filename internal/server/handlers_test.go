@@ -176,7 +176,9 @@ func TestHandleGetStatus_Found(t *testing.T) {
 	req := httptest.NewRequest("GET", "/status/test.example.com", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("hostname", "test.example.com")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	ctx = context.WithValue(ctx, auth.ForWhomKey(), "alice")
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	srv.handleGetStatus(rec, req)
 
