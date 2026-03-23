@@ -1,14 +1,14 @@
 # csr-api
 
-A self-service HTTP API for submitting Certificate Signing Requests. You POST a CSR, the API validates it, saves it to disk, and records the submission. No more chasing someone on Teams or raising a helpdesk ticket to get a certificate.
+HTTP API for submitting Certificate Signing Requests. POST a CSR, the API validates it, saves it to disk, and records the submission. No more chasing someone on Teams or raising a helpdesk ticket to get a certificate.
 
 ## What it does
 
 You POST a hostname and a base64-encoded CSR. The API validates the CSR (checks it's valid PEM with a CN or SANs), saves it to disk organised by token owner, and records the submission in SQLite. The actual certificate issuance is handled downstream by central IT's existing tooling.
 
-Authentication is via bearer tokens. Tokens are SHA-256 hashed before storage, so the raw token only appears once at creation time. The token's owner label is used to organise CSRs on disk -- each owner gets their own directory.
+Authentication is via bearer tokens. Tokens are SHA-256 hashed before storage, so the raw token only appears once at creation time. The token's owner label organises CSRs on disk; each owner gets their own directory.
 
-Compiles to a single static binary with an embedded SQLite database -- nothing else to install or run.
+Compiles to a single static binary with an embedded SQLite database. Nothing else to install.
 
 ## Prerequisites
 
@@ -96,9 +96,18 @@ HOSTNAME="app.example.ac.uk"
 KEY_FILE="${HOSTNAME}.key"
 CSR_FILE="${HOSTNAME}.csr"
 
+# --- CSR defaults (change these to match your organisation) ---
+COUNTRY="GB"
+STATE="Scotland"
+LOCALITY="Glasgow"
+ORGANIZATION="University of Glasgow"
+ORG_UNIT="School of Engineering"
+KEY_SIZE=4096
+
 # --- Generate a private key and CSR ---
-openssl ecparam -genkey -name prime256v1 -noout -out "$KEY_FILE"
-openssl req -new -key "$KEY_FILE" -out "$CSR_FILE" -subj "/CN=${HOSTNAME}"
+openssl genrsa -out "$KEY_FILE" "$KEY_SIZE"
+openssl req -new -key "$KEY_FILE" -out "$CSR_FILE" \
+  -subj "/C=${COUNTRY}/ST=${STATE}/L=${LOCALITY}/O=${ORGANIZATION}/OU=${ORG_UNIT}/CN=${HOSTNAME}"
 
 echo "Generated key: ${KEY_FILE}"
 echo "Generated CSR: ${CSR_FILE}"
@@ -129,11 +138,11 @@ echo "  curl ${API_URL}/status/${HOSTNAME} -H 'Authorization: Bearer ${API_TOKEN
 
 ## Logging
 
-The API uses Go's structured logging (slog). Every log line is machine-parseable with `level`, `msg`, and contextual fields. The three levels mean:
+The API uses Go's structured logging (slog). Every log line is machine-parseable with `level`, `msg`, and contextual fields.
 
-- **INFO** -- normal operations (startup, CSR submissions, shutdown)
-- **WARN** -- expected but notable events (rejected auth, minor failures)
-- **ERROR** -- something is actually broken (DB errors, file write failures)
+- INFO: normal operations (startup, CSR submissions, shutdown)
+- WARN: expected but notable events (rejected auth, minor failures)
+- ERROR: something is actually broken (DB errors, file write failures)
 
 Example output:
 
@@ -144,7 +153,104 @@ time=2026-03-19T20:02:00.000Z level=WARN  msg="auth rejected" prefix=8a5a0868
 time=2026-03-19T20:05:00.000Z level=INFO  msg="shutting down..."
 ```
 
-If you're feeding logs into a central system, grep for `level=ERROR` to catch things that need attention. `level=WARN` with `msg="auth rejected"` is worth monitoring if you want to spot brute-force attempts -- the `prefix` field identifies which token was tried without leaking the secret.
+If you're feeding logs into a central system, grep for `level=ERROR` to catch things that need attention. `level=WARN` with `msg="auth rejected"` is worth monitoring if you want to spot brute-force attempts. The `prefix` field identifies which token was tried without leaking the secret.
+
+## Running behind a reverse proxy
+
+In production you'll want a reverse proxy in front of the API to handle TLS termination (and optionally rate limiting). Bind the API to localhost so it's only reachable through the proxy:
+
+```bash
+./csr-api serve --addr 127.0.0.1:8443
+```
+
+Or via environment variable:
+
+```bash
+CSR_API_ADDR=127.0.0.1:8443 ./csr-api serve
+```
+
+### Caddy
+
+Caddy handles TLS automatically. If the hostname has a public DNS record, Caddy will fetch a Let's Encrypt certificate with no extra config. For an internal hostname where you already have a cert, point to the files explicitly.
+
+**Automatic TLS (public DNS):**
+
+```
+csr-api.example.ac.uk {
+	reverse_proxy 127.0.0.1:8443
+}
+```
+
+**Manual TLS (internal cert):**
+
+```
+csr-api.example.ac.uk {
+	tls /etc/ssl/certs/csr-api.pem /etc/ssl/private/csr-api.key
+	reverse_proxy 127.0.0.1:8443
+}
+```
+
+That's the entire file. Save it as `Caddyfile` and run `caddy run`.
+
+> **Rate limiting in Caddy** requires the external [caddy-ratelimit](https://github.com/mholt/caddy-ratelimit) module, which means building Caddy with `xcaddy`. If you need rate limiting and would rather not maintain a custom Caddy build, nginx (below) has it built in.
+
+### nginx
+
+nginx needs a certificate provided; it won't fetch one for you. The config below terminates TLS, rate-limits to 10 requests/second per client IP (with a small burst allowance), and proxies to the API.
+
+**/etc/nginx/sites-available/csr-api:**
+
+```nginx
+# Rate limit zone: 10 req/s per client IP, shared across workers.
+# The zone uses 10MB of shared memory (~160,000 unique IPs).
+limit_req_zone $binary_remote_addr zone=csr_api:10m rate=10r/s;
+
+server {
+    listen 443 ssl;
+    server_name csr-api.example.ac.uk;
+
+    ssl_certificate     /etc/ssl/certs/csr-api.pem;
+    ssl_certificate_key /etc/ssl/private/csr-api.key;
+
+    # Apply the rate limit. burst=20 queues short spikes rather than
+    # rejecting them outright; nodelay forwards queued requests
+    # immediately once a slot opens.
+    limit_req zone=csr_api burst=20 nodelay;
+
+    # Return a JSON error body on 429 so API clients get something
+    # machine-readable rather than an nginx HTML page.
+    limit_req_status 429;
+    error_page 429 = @rate_limited;
+    location @rate_limited {
+        default_type application/json;
+        return 429 '{"error": "rate limit exceeded, try again shortly"}';
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8443;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name csr-api.example.ac.uk;
+    return 301 https://$host$request_uri;
+}
+```
+
+Enable the site and reload:
+
+```bash
+ln -s /etc/nginx/sites-available/csr-api /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+```
+
+> **Tuning the rate limit:** 10 req/s with a burst of 20 is generous for a CSR submission API. If you want to lock it down further, `rate=2r/s burst=5` would be plenty for normal use while still catching runaway scripts or brute-force attempts against the bearer tokens.
 
 ## Running tests
 
@@ -154,14 +260,14 @@ go test ./...
 
 ## Releases
 
-Pre-built binaries for Linux, macOS, and Windows (amd64 and arm64) get published when you push a version tag:
+Binaries for Linux, macOS, and Windows (amd64 and arm64) get published when you push a version tag:
 
 ```bash
 git tag v0.2.0
 git push origin v0.2.0
 ```
 
-Binaries and SHA-256 checksums get attached to the GitHub release.
+Binaries and SHA-256 checksums are attached to the GitHub release.
 
 ## Contributing
 
