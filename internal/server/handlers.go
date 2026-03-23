@@ -72,7 +72,7 @@ func (s *Server) handleSubmitCSR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	csrPath := filepath.Join(ownerDir, req.Hostname+".csr")
-	if !filepath.IsAbs(csrPath) || filepath.Dir(csrPath) != ownerDir {
+	if filepath.Dir(csrPath) != ownerDir {
 		writeError(w, http.StatusBadRequest, "invalid hostname")
 		return
 	}
