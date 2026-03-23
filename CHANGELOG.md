@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-03-23
+### Changed
+- `revoke-token` now detects duplicate token prefixes — if multiple active tokens share the same 8-character prefix, it lists them with owner and creation date and prompts you to pick which one to revoke
+
 ## [1.0.0] - 2026-03-23
 ### Added
 - Self-service CSR submission via `POST /submit-csr` with bearer token authentication
@@ -29,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.1] - 2026-03-18
 
-[Unreleased]: https://github.com/UoGSoE/csr-api/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/UoGSoE/csr-api/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/UoGSoE/csr-api/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/UoGSoE/csr-api/compare/v0.0.6...v1.0.0
 [0.0.6]: https://github.com/UoGSoE/csr-api/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/UoGSoE/csr-api/compare/v0.0.4...v0.0.5
