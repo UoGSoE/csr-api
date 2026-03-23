@@ -161,6 +161,84 @@ func TestHandleSubmitCSR_MissingHostname(t *testing.T) {
 	}
 }
 
+func TestHandleSubmitCSR_RelativeCSRsDir(t *testing.T) {
+	// Regression: the traversal guard must work with relative csrsDir (the default).
+	st, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	relDir := filepath.Join(t.TempDir(), "rel")
+	srv := &Server{
+		store:   st,
+		logger:  slog.Default(),
+		csrsDir: relDir,
+	}
+
+	csrPEM := makeCSRPEM(t, "glasgow.example.com")
+	body, _ := json.Marshal(submitCSRIn{
+		Hostname: "glasgow.example.com",
+		B64CSR:   base64.StdEncoding.EncodeToString(csrPEM),
+	})
+
+	req := httptest.NewRequest("POST", "/submit-csr", bytes.NewReader(body))
+	req = withForWhom(req, "alice")
+	rec := httptest.NewRecorder()
+	srv.handleSubmitCSR(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("relative csrsDir: status = %d, want %d, body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+}
+
+func TestHandleSubmitCSR_PathTraversal(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	csrPEM := makeCSRPEM(t, "evil.example.com")
+
+	for _, hostname := range []string{
+		"../../etc/evil",
+		"../sibling",
+		"sub/dir/nested",
+	} {
+		t.Run(hostname, func(t *testing.T) {
+			body, _ := json.Marshal(submitCSRIn{
+				Hostname: hostname,
+				B64CSR:   base64.StdEncoding.EncodeToString(csrPEM),
+			})
+
+			req := httptest.NewRequest("POST", "/submit-csr", bytes.NewReader(body))
+			req = withForWhom(req, "edinburgh")
+			rec := httptest.NewRecorder()
+			srv.handleSubmitCSR(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("hostname %q: status = %d, want %d", hostname, rec.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestHandleSubmitCSR_HostnameMismatch(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	csrPEM := makeCSRPEM(t, "real.gla.ac.uk")
+	body, _ := json.Marshal(submitCSRIn{
+		Hostname: "fake.edinburgh.ac.uk",
+		B64CSR:   base64.StdEncoding.EncodeToString(csrPEM),
+	})
+
+	req := httptest.NewRequest("POST", "/submit-csr", bytes.NewReader(body))
+	req = withForWhom(req, "alice")
+	rec := httptest.NewRecorder()
+	srv.handleSubmitCSR(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("hostname mismatch: status = %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func TestHandleGetStatus_Found(t *testing.T) {
 	srv, st := newTestServer(t)
 
