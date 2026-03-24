@@ -64,7 +64,7 @@ func (s *Server) handleSubmitCSR(w http.ResponseWriter, r *http.Request) {
 	submittedBy := auth.ForWhomFromContext(r.Context())
 
 	// Save CSR to disk: {csrs-dir}/{submitted-by}/{hostname}.csr
-	ownerDir := filepath.Join(s.csrsDir, submittedBy)
+	ownerDir := filepath.Join(s.csrsDir, auth.SafeDirName(submittedBy))
 	if err := os.MkdirAll(ownerDir, 0o755); err != nil {
 		s.logger.Error("create csr dir failed", "path", ownerDir, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

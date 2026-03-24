@@ -100,6 +100,10 @@ func (cmd *ServeCmd) Run(cli *CLI) error {
 }
 
 func (cmd *CreateTokenCmd) Run(cli *CLI) error {
+	if auth.SafeDirName(cmd.ForWhom) == "unknown" {
+		return fmt.Errorf("for-whom must contain at least one alphanumeric character")
+	}
+
 	os.MkdirAll(filepath.Dir(cli.DBPath), 0o755)
 
 	st, err := store.New(cli.DBPath)

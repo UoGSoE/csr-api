@@ -42,3 +42,33 @@ func TestTokenPrefix_Length(t *testing.T) {
 		t.Errorf("prefix = %q, want %q", p, "abcdef12")
 	}
 }
+
+func TestSafeDirName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"physics", "physics"},
+		{"alice", "alice"},
+		{"jim@chemistry", "jim-chemistry"},
+		{"steve@james watt (south)", "steve-james-watt-south"},
+		{"  Physics  ", "physics"},
+		{"../../etc", "etc"},
+		{"../../../passwd", "passwd"},
+		{"foo///bar", "foo-bar"},
+		{"hello---world", "hello-world"},
+		{"  ", "unknown"},
+		{"", "unknown"},
+		{"@@@", "unknown"},
+		{"Glasgow-IT", "glasgow-it"},
+		{"Computing Science (Level 4)", "computing-science-level-4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := SafeDirName(tt.input)
+			if got != tt.want {
+				t.Errorf("SafeDirName(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
