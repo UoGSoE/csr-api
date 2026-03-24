@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-03-24
+### Changed
+- Token owner names (for-whom) are now sanitised into filesystem-friendly directory names — spaces, `@`, parentheses and other special characters are collapsed to hyphens (e.g. `jim@chemistry` becomes `jim-chemistry/`)
+- `create-token` now rejects for-whom values that contain no alphanumeric characters
+
 ## [1.1.1] - 2026-03-23
 ### Changed
 - Handle edge cases in CSR submission and status endpoints
@@ -39,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.1] - 2026-03-18
 
-[Unreleased]: https://github.com/UoGSoE/csr-api/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/UoGSoE/csr-api/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/UoGSoE/csr-api/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/UoGSoE/csr-api/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/UoGSoE/csr-api/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/UoGSoE/csr-api/compare/v0.0.6...v1.0.0
